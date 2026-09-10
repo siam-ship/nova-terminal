@@ -1,0 +1,671 @@
+<!DOCTYPE html>
+<html lang="bn">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>NOVA - Sci-Fi AR Terminal</title>
+
+  <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;700&display=swap" rel="stylesheet">
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/face_detection.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+
+  <style>
+    :root { --main-color: #00ddff; --alert-color: #ff3333; --gold: #ffd166; }
+    body, html {
+      margin: 0; padding: 0; width: 100vw; height: 100vh;
+      background-color: #000; overflow: hidden;
+      font-family: 'Rajdhani', sans-serif; color: var(--main-color); user-select: none;
+    }
+
+    .video-container { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; z-index: 1; }
+    video {
+      position: absolute; width: 2px; height: 2px; opacity: 0; pointer-events: none;
+    }
+    canvas {
+      position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+      object-fit: cover; z-index: 2;
+    }
+
+    .night-vision { filter: sepia(100%) hue-rotate(90deg) saturate(300%) contrast(150%) brightness(1.2); }
+
+    #shieldOverlay {
+      position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+      box-shadow: inset 0 0 150px rgba(255, 0, 0, 0.6); z-index: 5; display: none;
+      animation: pulse 1s infinite alternate; pointer-events: none;
+    }
+    @keyframes pulse { 0% { opacity: 0.5; } 100% { opacity: 1; } }
+
+    #targetReticle {
+      position: absolute; top: 50%; left: 50%; width: 200px; height: 200px;
+      border: 3px dashed var(--alert-color); border-radius: 50%;
+      transform: translate(-50%, -50%); z-index: 5; display: none;
+      animation: spin 6s linear infinite; box-shadow: 0 0 30px var(--alert-color);
+      pointer-events: none;
+    }
+    @keyframes spin { 100% { transform: translate(-50%, -50%) rotate(360deg); } }
+
+    #scanOverlay {
+      position: absolute; top: 0; left: 0; width: 100%; height: 5px;
+      background: rgba(0, 221, 255, 0.8); box-shadow: 0 0 20px var(--main-color);
+      z-index: 6; display: none; pointer-events: none;
+    }
+    @keyframes scanMove { 0% { top: 0; } 100% { top: 100%; } }
+
+    .hud {
+      position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+      z-index: 10; padding: 20px; box-sizing: border-box;
+      display: flex; flex-direction: column; justify-content: space-between;
+      text-shadow: 0 0 8px var(--main-color);
+    }
+    .hud-header, .hud-footer { display: flex; justify-content: space-between; font-size: 18px; font-weight: bold; }
+
+    .status-box { background: rgba(0, 20, 30, 0.6); padding: 10px; border-left: 3px solid var(--main-color); backdrop-filter: blur(5px); pointer-events: auto; }
+    .rec { color: var(--alert-color); animation: blink 1s infinite; text-shadow: 0 0 10px var(--alert-color); }
+    @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: 0; } }
+
+    .hud-btn {
+      font-family: 'Rajdhani', sans-serif; font-weight: 700; font-size: 14px;
+      background: rgba(0, 30, 45, 0.7); color: var(--main-color);
+      border: 1px solid var(--main-color); padding: 8px 12px; margin: 3px;
+      cursor: pointer; border-radius: 4px; pointer-events: auto;
+      text-shadow: 0 0 6px var(--main-color); transition: 0.2s;
+    }
+    .hud-btn:hover, .hud-btn.hovered { background: var(--main-color); color: #000; box-shadow: 0 0 20px var(--main-color); }
+    .hud-btn.alert { border-color: var(--alert-color); color: var(--alert-color); text-shadow: 0 0 6px var(--alert-color); }
+    .hud-btn.alert:hover, .hud-btn.alert.hovered { background: var(--alert-color); color: #000; box-shadow: 0 0 20px var(--alert-color); }
+
+    .btn-row { display: flex; flex-wrap: wrap; }
+
+    /* Pinch radial menu */
+    #gestureMenu {
+      position: absolute; z-index: 50; display: none; pointer-events: none;
+    }
+    #gestureMenu .hud-btn {
+      position: absolute; transform: translate(-50%, -50%); pointer-events: auto;
+      width: 110px; text-align: center;
+    }
+
+    #cursorDot {
+      position: absolute; width: 22px; height: 22px; border-radius: 50%;
+      border: 2px solid var(--gold); box-shadow: 0 0 15px var(--gold);
+      transform: translate(-50%, -50%); z-index: 60; display: none; pointer-events: none;
+    }
+    #cursorDot .ring {
+      position: absolute; top: 50%; left: 50%; width: 22px; height: 22px;
+      border-radius: 50%; border: 3px solid var(--gold);
+      transform: translate(-50%, -50%); opacity: 0.9;
+    }
+
+    #detailModal {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      background: rgba(0, 15, 25, 0.9); border: 2px solid var(--main-color);
+      box-shadow: 0 0 40px var(--main-color); padding: 25px 35px; z-index: 80;
+      display: none; text-align: center; min-width: 260px; pointer-events: auto;
+    }
+    #detailModal h2 { margin: 0 0 10px 0; font-size: 20px; letter-spacing: 2px; }
+    #detailModal p { margin: 4px 0; font-size: 16px; }
+    #detailModal .close-x { position: absolute; top: 6px; right: 12px; cursor: pointer; font-size: 18px; }
+
+    #startScreen {
+      position: absolute; top: 0; left: 0; width: 100vw; height: 100vh;
+      background: #000; z-index: 100; display: flex; flex-direction: column;
+      justify-content: center; align-items: center; text-align: center;
+    }
+    .start-btn {
+      padding: 15px 40px; font-size: 24px; font-family: 'Rajdhani', sans-serif; font-weight: bold;
+      color: var(--main-color); background: transparent; border: 2px solid var(--main-color);
+      cursor: pointer; box-shadow: 0 0 20px rgba(0, 221, 255, 0.5); transition: 0.3s; margin-top: 20px;
+    }
+    .start-btn:hover { background: var(--main-color); color: #000; box-shadow: 0 0 40px var(--main-color); }
+
+    .mic-status {
+      position: absolute; top: 80px; left: 50%; transform: translateX(-50%);
+      font-size: 16px; background: rgba(0,255,0,0.2); border: 1px solid lime; padding: 5px 15px;
+      border-radius: 20px; color: lime; display: none; z-index: 20;
+    }
+
+    #hintText {
+      position: absolute; bottom: 90px; left: 50%; transform: translateX(-50%);
+      font-size: 14px; color: #aaa; background: rgba(0,0,0,0.5); padding: 6px 14px;
+      border-radius: 12px; z-index: 20;
+    }
+  </style>
+</head>
+<body>
+
+  <div id="startScreen">
+    <div style="font-size: 32px; letter-spacing: 2px; text-shadow: 0 0 15px #0df;">SYSTEM NOVA</div>
+    <div style="font-size: 16px; color: #888; margin-top: 10px;">Requires Camera &amp; Microphone Access</div>
+    <button class="start-btn" onclick="startSystem()">POWER ON</button>
+  </div>
+
+  <div id="shieldOverlay"></div>
+  <div id="targetReticle"></div>
+  <div id="scanOverlay"></div>
+  <div class="mic-status" id="micStatus">🎙️ Listening to Voice Commands...</div>
+  <div id="hintText" style="display:none;">👌 Pinch (thumb + index) to open the menu</div>
+
+  <div class="video-container">
+    <video class="input_video" autoplay playsinline muted></video>
+    <canvas class="output_canvas" id="mainCanvas"></canvas>
+  </div>
+
+  <div id="cursorDot"><div class="ring" id="cursorRing"></div></div>
+
+  <div id="gestureMenu"></div>
+
+  <div id="detailModal">
+    <span class="close-x" onclick="closeDetail()">✕</span>
+    <h2 id="detailTitle">TITLE</h2>
+    <p id="detailBody">...</p>
+  </div>
+
+  <div class="hud" id="hud" style="display: none;">
+    <div class="hud-header">
+      <div class="status-box">
+        USER: RAHUL BOSS <br>
+        <span id="faceStatus" style="font-size:14px; color: yellow;">SCANNING FACE...</span>
+      </div>
+      <div class="status-box" style="text-align: right; border-left:none; border-right: 3px solid var(--main-color);">
+        <span class="rec">● LIVE FEED</span><br>
+        <span id="timeDataLabel">00:00</span>
+      </div>
+    </div>
+
+    <div style="position: absolute; top: 40%; left: 20px;">
+      <div class="status-box" style="margin-bottom: 10px;">
+        GESTURE: <span id="gestureText" style="color: yellow;">NONE</span>
+      </div>
+      <div class="status-box">
+        VOICE CMD: <span id="voiceText" style="color: lime;">WAITING</span>
+      </div>
+    </div>
+
+    <div class="hud-footer">
+      <div class="btn-row">
+        <button class="hud-btn" id="btnBattery" onclick="showBatteryDetail()">BATTERY: --%</button>
+        <button class="hud-btn" id="btnTime" onclick="showTimeDetail()">TIME: --:--</button>
+        <button class="hud-btn" id="btnWeather" onclick="showWeatherDetail()">KURIGRAM: --°C</button>
+      </div>
+      <div class="btn-row" style="justify-content: flex-end;">
+        <button class="hud-btn" id="btnScan" onclick="cmdScan()">SCAN</button>
+        <button class="hud-btn" id="btnShield" onclick="cmdShield()">SHIELD</button>
+        <button class="hud-btn" id="btnTarget" onclick="cmdTarget()">TARGET</button>
+        <button class="hud-btn" id="btnNight" onclick="cmdNightVision()">NIGHT VISION</button>
+        <button class="hud-btn alert" id="btnNormal" onclick="cmdNormal()">NORMAL</button>
+        <button class="hud-btn" id="btnShot" onclick="takeScreenshot()">📸 CAPTURE</button>
+        <button class="hud-btn" id="btnMute" onclick="toggleMute()">🔊 VOICE ON</button>
+        <button class="hud-btn" id="btnHelp" onclick="showHelpDetail()">HELP</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const videoElement = document.querySelector('.input_video');
+    const canvasElement = document.getElementById('mainCanvas');
+    const canvasCtx = canvasElement.getContext('2d');
+
+    const startScreen = document.getElementById('startScreen');
+    const hud = document.getElementById('hud');
+    const gestureText = document.getElementById('gestureText');
+    const faceStatus = document.getElementById('faceStatus');
+    const voiceText = document.getElementById('voiceText');
+    const gestureMenu = document.getElementById('gestureMenu');
+    const cursorDot = document.getElementById('cursorDot');
+    const cursorRing = document.getElementById('cursorRing');
+    const detailModal = document.getElementById('detailModal');
+    const hintText = document.getElementById('hintText');
+
+    let isNightVision = false;
+    let faceIdentified = false;
+    let isMuted = false;
+    let lastWeather = null;
+    let lastBattery = null;
+
+    // ---------------- Audio ----------------
+    const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+    function playSFX(type) {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+      const osc = audioCtx.createOscillator();
+      const gain = audioCtx.createGain();
+      osc.connect(gain); gain.connect(audioCtx.destination);
+
+      if (type === 'boot') {
+        osc.type = 'sine'; osc.frequency.setValueAtTime(200, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(800, audioCtx.currentTime + 0.5);
+        gain.gain.setValueAtTime(0.5, audioCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 1);
+        osc.start(); osc.stop(audioCtx.currentTime + 1);
+      } else if (type === 'blaster') {
+        osc.type = 'sawtooth'; osc.frequency.setValueAtTime(600, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(100, audioCtx.currentTime + 0.5);
+        gain.gain.setValueAtTime(0.5, audioCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.5);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.5);
+      } else if (type === 'beep') {
+        osc.type = 'square'; osc.frequency.setValueAtTime(900, audioCtx.currentTime);
+        gain.gain.setValueAtTime(0.1, audioCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.1);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.1);
+      } else if (type === 'select') {
+        osc.type = 'triangle'; osc.frequency.setValueAtTime(1200, audioCtx.currentTime);
+        osc.frequency.exponentialRampToValueAtTime(1800, audioCtx.currentTime + 0.15);
+        gain.gain.setValueAtTime(0.3, audioCtx.currentTime); gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + 0.15);
+        osc.start(); osc.stop(audioCtx.currentTime + 0.15);
+      }
+    }
+
+    function speakAI(text, force) {
+      if (isMuted && !force) return;
+      if (!('speechSynthesis' in window)) return;
+      window.speechSynthesis.cancel();
+      const u = new SpeechSynthesisUtterance(text);
+      const voices = window.speechSynthesis.getVoices();
+      let femaleVoice = voices.find(v => v.name.includes('Female') || v.name.includes('Zira') || v.name.includes('Samantha') || (v.name.includes('English') && v.name.includes('UK')));
+      if (femaleVoice) u.voice = femaleVoice;
+      u.pitch = 1.2; u.rate = 1.0;
+      window.speechSynthesis.speak(u);
+    }
+
+    function toggleMute() {
+      isMuted = !isMuted;
+      document.getElementById('btnMute').innerText = isMuted ? '🔇 VOICE OFF' : '🔊 VOICE ON';
+      if (!isMuted) speakAI('Voice feedback enabled.', true);
+    }
+
+    // ---------------- Live data ----------------
+    setInterval(() => {
+      document.getElementById('timeDataLabel').innerText = new Date().toLocaleTimeString();
+      document.getElementById('btnTime').innerText = 'TIME: ' + new Date().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'});
+    }, 1000);
+
+    if (navigator.getBattery) {
+      navigator.getBattery().then(batt => {
+        const update = () => {
+          lastBattery = batt;
+          document.getElementById('btnBattery').innerText = 'BATTERY: ' + Math.round(batt.level * 100) + '%';
+        };
+        update();
+        batt.addEventListener('levelchange', update);
+        batt.addEventListener('chargingchange', update);
+      });
+    } else {
+      document.getElementById('btnBattery').innerText = 'BATTERY: N/A';
+    }
+
+    function fetchWeather() {
+      fetch('https://api.open-meteo.com/v1/forecast?latitude=25.81&longitude=89.64&current_weather=true')
+        .then(res => res.json())
+        .then(data => {
+          lastWeather = data.current_weather;
+          document.getElementById('btnWeather').innerText = 'KURIGRAM: ' + data.current_weather.temperature + '°C';
+        })
+        .catch(() => { document.getElementById('btnWeather').innerText = 'WEATHER: N/A'; });
+    }
+    fetchWeather();
+    setInterval(fetchWeather, 10 * 60 * 1000);
+
+    // ---------------- Detail modal ----------------
+    let detailTimer = null;
+    function openDetail(title, bodyHtml) {
+      document.getElementById('detailTitle').innerText = title;
+      document.getElementById('detailBody').innerHTML = bodyHtml;
+      detailModal.style.display = 'block';
+      clearTimeout(detailTimer);
+      detailTimer = setTimeout(closeDetail, 5000);
+    }
+    function closeDetail() { detailModal.style.display = 'none'; clearTimeout(detailTimer); }
+
+    function showBatteryDetail() {
+      if (lastBattery) {
+        openDetail('BATTERY STATUS', `Level: ${Math.round(lastBattery.level * 100)}%<br>Charging: ${lastBattery.charging ? 'YES' : 'NO'}`);
+      } else {
+        openDetail('BATTERY STATUS', 'Not available on this device/browser.');
+      }
+    }
+    function showTimeDetail() {
+      const now = new Date();
+      openDetail('DATE / TIME', now.toLocaleDateString() + '<br>' + now.toLocaleTimeString());
+    }
+    function showWeatherDetail() {
+      if (lastWeather) {
+        openDetail('WEATHER - KURIGRAM', `Temp: ${lastWeather.temperature}°C<br>Wind: ${lastWeather.windspeed} km/h`);
+      } else {
+        openDetail('WEATHER', 'Fetching...');
+      }
+    }
+    function showHelpDetail() {
+      openDetail('COMMANDS', 'Voice: "nova scan / shield / target / night vision / normal"<br>Gesture: FIST=Shield, V=Target, THUMBS UP=OK, OPEN PALM=Blast<br>Pinch (👌) = Open Menu');
+    }
+
+    // ---------------- Actions ----------------
+    function cmdScan() {
+      speakAI('Scanning system now, Boss.'); playSFX('beep');
+      const s = document.getElementById('scanOverlay');
+      s.style.display = 'block'; s.style.top = '0'; s.style.animation = 'scanMove 2s linear';
+      setTimeout(() => { s.style.display = 'none'; s.style.animation = ''; }, 2000);
+    }
+    function cmdShield() {
+      speakAI('Defense shield activated.'); playSFX('boot');
+      document.getElementById('shieldOverlay').style.display = 'block';
+    }
+    function cmdTarget() {
+      speakAI('Weaponry online. Targeting systems active.'); playSFX('beep');
+      document.getElementById('targetReticle').style.display = 'block';
+    }
+    function cmdNightVision() {
+      speakAI('Night vision mode engaged.'); playSFX('beep');
+      isNightVision = true;
+    }
+    function cmdNormal() {
+      speakAI('Deactivating all systems. Returning to normal mode.'); playSFX('beep');
+      document.getElementById('shieldOverlay').style.display = 'none';
+      document.getElementById('targetReticle').style.display = 'none';
+      isNightVision = false;
+    }
+    function takeScreenshot() {
+      const link = document.createElement('a');
+      link.download = 'nova_capture_' + Date.now() + '.png';
+      link.href = canvasElement.toDataURL('image/png');
+      link.click();
+      speakAI('Image captured.'); playSFX('select');
+    }
+
+    // ---------------- Voice recognition ----------------
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let recognition;
+    let voiceListeningIntended = false;
+    if (SpeechRecognition) {
+      recognition = new SpeechRecognition();
+      recognition.continuous = true;
+      recognition.interimResults = false;
+      recognition.lang = 'en-US';
+
+      recognition.onresult = (event) => {
+        const cmd = event.results[event.results.length - 1][0].transcript.toLowerCase();
+        voiceText.innerText = cmd.toUpperCase();
+
+        if (cmd.includes('nova') || cmd.includes('system')) {
+          if (cmd.includes('scan')) cmdScan();
+          else if (cmd.includes('shield')) cmdShield();
+          else if (cmd.includes('weapon') || cmd.includes('target')) cmdTarget();
+          else if (cmd.includes('night vision')) cmdNightVision();
+          else if (cmd.includes('deactivate') || cmd.includes('normal')) cmdNormal();
+        }
+      };
+      recognition.onerror = () => { /* ignore transient errors, keep listening */ };
+      recognition.onend = () => { if (voiceListeningIntended) { try { recognition.start(); } catch (e) {} } };
+    }
+
+    // ---------------- System start ----------------
+    async function startSystem() {
+      if (audioCtx.state === 'suspended') audioCtx.resume();
+
+      try {
+        // ensure camera permission is actually requested up front with a clear error if denied
+        const testStream = await navigator.mediaDevices.getUserMedia({ video: true });
+        testStream.getTracks().forEach(t => t.stop());
+      } catch (err) {
+        alert('Camera access is required for Nova to work. Please allow camera permission and reload.');
+        return;
+      }
+
+      startScreen.style.display = 'none';
+      hud.style.display = 'flex';
+      hintText.style.display = 'block';
+
+      const docElm = document.documentElement;
+      if (docElm.requestFullscreen) docElm.requestFullscreen().catch(() => {});
+      else if (docElm.webkitRequestFullscreen) docElm.webkitRequestFullscreen();
+
+      playSFX('boot');
+      speakAI('Hello Rahul Boss. I am Nova. Terminal is online and ready for your commands.');
+
+      if (recognition) {
+        voiceListeningIntended = true;
+        try { recognition.start(); } catch (e) {}
+        document.getElementById('micStatus').style.display = 'block';
+      }
+
+      try {
+        await camera.start();
+      } catch (err) {
+        alert('Could not start the camera feed: ' + err.message);
+      }
+    }
+
+    // ---------------- Camera / gesture state ----------------
+    let latestHandData = null;
+    let latestFaceData = null;
+    let lastGesture = '';
+
+    // Pinch / menu state
+    let menuOpen = false;
+    let pinchActive = false;
+    const DWELL_MS = 900;
+    let hoverEl = null;
+    let hoverStart = 0;
+
+    const MENU_ITEMS = [
+      { label: 'SCAN', fn: cmdScan },
+      { label: 'SHIELD', fn: cmdShield },
+      { label: 'TARGET', fn: cmdTarget },
+      { label: 'NIGHT VISION', fn: cmdNightVision },
+      { label: 'NORMAL', fn: cmdNormal, cls: 'alert' },
+      { label: 'BATTERY', fn: showBatteryDetail },
+      { label: 'TIME', fn: showTimeDetail },
+      { label: 'WEATHER', fn: showWeatherDetail },
+      { label: 'CAPTURE', fn: takeScreenshot },
+      { label: 'HELP', fn: showHelpDetail }
+    ];
+
+    function buildMenu() {
+      gestureMenu.innerHTML = '';
+      MENU_ITEMS.forEach(item => {
+        const b = document.createElement('button');
+        b.className = 'hud-btn' + (item.cls ? ' ' + item.cls : '');
+        b.innerText = item.label;
+        b.onclick = () => { item.fn(); closeMenu(); };
+        gestureMenu.appendChild(b);
+      });
+    }
+    buildMenu();
+
+    function openMenu(cx, cy) {
+      menuOpen = true;
+      const margin = 90;
+      cx = Math.min(Math.max(cx, margin), window.innerWidth - margin);
+      cy = Math.min(Math.max(cy, margin), window.innerHeight - margin);
+      const radius = 150;
+      const btns = gestureMenu.children;
+      const n = btns.length;
+      for (let i = 0; i < n; i++) {
+        const angle = (i / n) * 2 * Math.PI - Math.PI / 2;
+        const bx = cx + radius * Math.cos(angle);
+        const by = cy + radius * Math.sin(angle);
+        btns[i].style.left = bx + 'px';
+        btns[i].style.top = by + 'px';
+      }
+      gestureMenu.style.display = 'block';
+      cursorDot.style.display = 'block';
+      playSFX('boot');
+    }
+    function closeMenu() {
+      menuOpen = false;
+      gestureMenu.style.display = 'none';
+      cursorDot.style.display = 'none';
+      hoverEl = null;
+      cursorRing.style.transform = 'translate(-50%, -50%) scale(1)';
+    }
+
+    function updateCursorAndDwell(screenX, screenY) {
+      cursorDot.style.left = screenX + 'px';
+      cursorDot.style.top = screenY + 'px';
+
+      let found = null;
+      const btns = gestureMenu.children;
+      for (let i = 0; i < btns.length; i++) {
+        const r = btns[i].getBoundingClientRect();
+        if (screenX >= r.left && screenX <= r.right && screenY >= r.top && screenY <= r.bottom) {
+          found = btns[i]; break;
+        }
+      }
+
+      if (found !== hoverEl) {
+        if (hoverEl) hoverEl.classList.remove('hovered');
+        hoverEl = found;
+        hoverStart = performance.now();
+        if (hoverEl) hoverEl.classList.add('hovered');
+      }
+
+      if (hoverEl) {
+        const progress = Math.min(1, (performance.now() - hoverStart) / DWELL_MS);
+        const scale = 1 + progress * 0.6;
+        cursorRing.style.transform = `translate(-50%, -50%) scale(${scale})`;
+        cursorRing.style.opacity = 1 - progress * 0.5;
+        if (progress >= 1) {
+          playSFX('select');
+          hoverEl.click();
+          hoverEl = null;
+        }
+      } else {
+        cursorRing.style.transform = 'translate(-50%, -50%) scale(1)';
+      }
+    }
+
+    // --- Gesture classification ---
+    function detectGesture(landmarks) {
+      const isExtended = (tip, pip) => landmarks[tip].y < landmarks[pip].y;
+      const index = isExtended(8, 6);
+      const middle = isExtended(12, 10);
+      const ring = isExtended(16, 14);
+      const pinky = isExtended(20, 18);
+      const thumb = landmarks[4].x < landmarks[3].x;
+
+      const dx = landmarks[4].x - landmarks[8].x;
+      const dy = landmarks[4].y - landmarks[8].y;
+      const pinchDist = Math.sqrt(dx * dx + dy * dy);
+      if (pinchDist < 0.055) return 'PINCH';
+
+      if (index && middle && ring && pinky && thumb) return 'OPEN_PALM';
+      if (!index && !middle && !ring && !pinky && !thumb) return 'FIST';
+      if (index && middle && !ring && !pinky) return 'V_SIGN';
+      if (!index && !middle && !ring && !pinky && thumb) return 'THUMBS_UP';
+      return 'TRACKING';
+    }
+
+    // ---------------- Render loop ----------------
+    function renderLoop() {
+      canvasElement.width = window.innerWidth;
+      canvasElement.height = window.innerHeight;
+
+      canvasElement.className = isNightVision ? 'output_canvas night-vision' : 'output_canvas';
+
+      // Draw mirrored video manually (selfie view), consistent with all overlays below
+      canvasCtx.save();
+      canvasCtx.scale(-1, 1);
+      canvasCtx.translate(-canvasElement.width, 0);
+      canvasCtx.drawImage(videoElement, 0, 0, canvasElement.width, canvasElement.height);
+      canvasCtx.restore();
+
+      // Face box (mirrored to match video)
+      if (latestFaceData && latestFaceData.detections.length > 0) {
+        if (!faceIdentified) {
+          faceIdentified = true;
+          faceStatus.innerText = 'USER CONFIRMED: RAHUL BOSS';
+          faceStatus.style.color = 'lime';
+          speakAI('Face ID verified. Welcome back, Boss.');
+        }
+        for (const detection of latestFaceData.detections) {
+          const box = detection.boundingBox;
+          const x = (1 - box.xCenter - box.width / 2) * canvasElement.width;
+          const y = (box.yCenter - box.height / 2) * canvasElement.height;
+          const w = box.width * canvasElement.width;
+          const h = box.height * canvasElement.height;
+
+          canvasCtx.strokeStyle = '#0df'; canvasCtx.lineWidth = 2;
+          canvasCtx.strokeRect(x, y, w, h);
+          canvasCtx.fillStyle = '#0df'; canvasCtx.font = "14px 'Rajdhani'";
+          canvasCtx.fillText('ID: RAHUL BOSS', x, y - 10);
+        }
+      }
+
+      // Hands
+      if (latestHandData && latestHandData.multiHandLandmarks.length > 0) {
+        for (const landmarks of latestHandData.multiHandLandmarks) {
+          // Mirror a copy of the landmarks for drawing, so skeleton matches mirrored video
+          const mirrored = landmarks.map(p => ({ x: 1 - p.x, y: p.y, z: p.z }));
+          drawConnectors(canvasCtx, mirrored, HAND_CONNECTIONS, { color: 'rgba(0, 221, 255, 0.5)', lineWidth: 2 });
+          drawLandmarks(canvasCtx, mirrored, { color: '#fff', lineWidth: 1, radius: 2 });
+
+          const gesture = detectGesture(landmarks);
+          gestureText.innerText = gesture;
+
+          const screenX = (1 - landmarks[8].x) * window.innerWidth;
+          const screenY = landmarks[8].y * window.innerHeight;
+
+          if (gesture === 'PINCH') {
+            if (!pinchActive) {
+              pinchActive = true;
+              if (!menuOpen) openMenu(screenX, screenY);
+              else closeMenu();
+            }
+          } else {
+            pinchActive = false;
+          }
+
+          if (menuOpen) updateCursorAndDwell(screenX, screenY);
+
+          if (gesture !== lastGesture) {
+            if (gesture === 'FIST') { speakAI('Shield activated.'); document.getElementById('shieldOverlay').style.display = 'block'; }
+            else if (gesture === 'V_SIGN') { speakAI('Targeting system online.'); document.getElementById('targetReticle').style.display = 'block'; }
+            else if (gesture === 'THUMBS_UP') { speakAI('Systems are fully optimized, Boss.'); playSFX('beep'); }
+            else if (gesture === 'OPEN_PALM') { playSFX('blaster'); }
+            lastGesture = gesture;
+          }
+
+          if (gesture === 'OPEN_PALM') {
+            const palmX = (1 - landmarks[9].x) * canvasElement.width;
+            const palmY = landmarks[9].y * canvasElement.height;
+            const gradient = canvasCtx.createRadialGradient(palmX, palmY, 10, palmX, palmY, 80);
+            gradient.addColorStop(0, 'white');
+            gradient.addColorStop(0.2, '#00ddff');
+            gradient.addColorStop(1, 'transparent');
+            canvasCtx.beginPath();
+            canvasCtx.arc(palmX, palmY, 80, 0, 2 * Math.PI);
+            canvasCtx.fillStyle = gradient;
+            canvasCtx.fill();
+          }
+        }
+      } else {
+        gestureText.innerText = 'NONE';
+        lastGesture = '';
+        pinchActive = false;
+      }
+
+      requestAnimationFrame(renderLoop);
+    }
+
+    // ---------------- MediaPipe setup ----------------
+    const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+    hands.setOptions({ maxNumHands: 2, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+    hands.onResults(res => { latestHandData = res; });
+
+    const faceDetection = new FaceDetection({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/face_detection/${file}` });
+    faceDetection.setOptions({ model: 'short', minDetectionConfidence: 0.5 });
+    faceDetection.onResults(res => { latestFaceData = res; });
+
+    const camera = new Camera(videoElement, {
+      onFrame: async () => {
+        await hands.send({ image: videoElement });
+        await faceDetection.send({ image: videoElement });
+      },
+      width: 1280, height: 720, facingMode: 'user'
+    });
+
+    requestAnimationFrame(renderLoop);
+    window.speechSynthesis.onvoiceschanged = () => {};
+  </script>
+</body>
+</html>
